@@ -1045,7 +1045,11 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         f"{observed_context}\n\n"
         f"{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
     )
+    return _prepend_turn_context(message, prefix)
 
+
+def _prepend_turn_context(message: Any, prefix: str) -> Any:
+    """Add model-only context to a text or multimodal user message."""
     if isinstance(message, str):
         return f"{prefix}{message}"
 
@@ -1058,6 +1062,22 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         return [{"type": "text", "text": prefix.rstrip()}] + wrapped
 
     return message
+
+
+def _current_turn_time_prefix(config: dict) -> str:
+    """Read the clock once for this turn when the gateway opts in."""
+    gateway_config = config.get("gateway")
+    if not isinstance(gateway_config, dict) or gateway_config.get("inject_current_time") is not True:
+        return ""
+
+    from hermes_time import now
+
+    current = now()
+    zone = getattr(current.tzinfo, "key", None)
+    timestamp = current.isoformat(sep=" ", timespec="seconds")
+    if zone:
+        timestamp = f"{timestamp} ({zone})"
+    return f"[Hermes runtime: current time at start of turn is {timestamp}]\n\n"
 
 
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
@@ -17381,7 +17401,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if role in {"user", "assistant"} and content:
                 api_messages.append({"role": role, "content": content})
 
-        api_messages.append({"role": "user", "content": message})
+        user_config = _load_gateway_config()
+        api_messages.append({
+            "role": "user",
+            "content": _current_turn_time_prefix(user_config) + message,
+        })
 
         # HTTP headers ---------------------------------------------------
         headers: Dict[str, str] = {"Content-Type": "application/json"}
@@ -17404,7 +17428,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _scfg = StreamingConfig()
 
         platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -19719,6 +19742,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _run_message,
                     observed_group_context,
                 )
+                time_prefix = _current_turn_time_prefix(user_config)
+                if time_prefix:
+                    # A multimodal override must preserve the original media parts.
+                    if isinstance(_run_message, list) or _persist_user_message_override is None:
+                        _persist_user_message_override = _run_message
+                    _api_run_message = _prepend_turn_context(_api_run_message, time_prefix)
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
                     "task_id": session_id,

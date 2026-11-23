@@ -2998,6 +2998,8 @@ DEFAULT_CONFIG = {
         "message_timestamps": {
             "enabled": False,
         },
+        # Give the model the current wall-clock time at each gateway turn.
+        "inject_current_time": False,
 
         # Maximum bytes for an inbound image / audio / video payload the
         # gateway will buffer into memory and cache to disk. Inbound media is

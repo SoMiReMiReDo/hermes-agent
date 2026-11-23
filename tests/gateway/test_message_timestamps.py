@@ -1,6 +1,8 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from gateway.message_timestamps import (
     coerce_message_timestamp,
     render_user_content_with_timestamp,
@@ -135,3 +137,53 @@ def test_build_history_injects_only_when_enabled():
     assert agent_history[0]["content"].endswith("hello")
     # Assistant message is never timestamped.
     assert agent_history[1]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_gateway_injects_fresh_time_for_each_weixin_turn(monkeypatch, tmp_path):
+    import hermes_time
+    from gateway.config import Platform
+    from tests.gateway.test_run_progress_topics import _run_with_agent
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    times = iter([
+        datetime(2026, 11, 23, 23, 59, 59, tzinfo=shanghai),
+        datetime(2026, 11, 24, 0, 0, 1, tzinfo=shanghai),
+    ])
+    monkeypatch.setattr(hermes_time, "now", lambda: next(times))
+    calls = []
+
+    class CaptureAgent:
+        def __init__(self, **kwargs):
+            self.tools = []
+
+        def run_conversation(self, message, *, persist_user_message, **kwargs):
+            calls.append((message, persist_user_message))
+            return {
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": persist_user_message},
+                    {"role": "assistant", "content": "done"},
+                ],
+                "api_calls": 1,
+            }
+
+    await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CaptureAgent,
+        session_id="test-weixin-turn-time",
+        platform=Platform.WEIXIN,
+        chat_type="dm",
+        thread_id=None,
+        pending_text="还有呢？",
+        config_data={"gateway": {"inject_current_time": True}},
+    )
+
+    assert len(calls) == 2
+    first, second = calls
+    assert "2026-11-23 23:59:59+08:00 (Asia/Shanghai)" in first[0]
+    assert "2026-11-24 00:00:01+08:00 (Asia/Shanghai)" in second[0]
+    assert first[1] == "hello"
+    assert second[1].endswith("还有呢？")
+    assert "Hermes runtime" not in second[1]
